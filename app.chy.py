@@ -40,10 +40,29 @@ def charger_donnees(ticker, debut, fin, interval="1d"):
     """Charge les données financières via yfinance"""
     try:
         data = yf.download(ticker, start=debut, end=fin, interval=interval, progress=False)
+        if data.empty:
+            st.error(f"❌ Aucune donnée trouvée pour {ticker}")
+            return None
+        
+        # Reset index pour avoir la colonne Date
         data.reset_index(inplace=True)
+        
+        # Vérifier si les colonnes existent
+        if 'Date' not in data.columns:
+            if 'Datetime' in data.columns:
+                data.rename(columns={'Datetime': 'Date'}, inplace=True)
+        
+        # S'assurer que les colonnes OHLCV existent
+        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        missing_cols = [col for col in required_cols if col not in data.columns]
+        if missing_cols:
+            st.error(f"❌ Colonnes manquantes: {missing_cols}")
+            return None
+            
+        st.success(f"✅ {len(data)} lignes chargées pour {ticker}")
         return data
     except Exception as e:
-        st.error(f"Erreur lors du chargement: {e}")
+        st.error(f"❌ Erreur lors du chargement: {str(e)}")
         return None
 
 # ============================================
@@ -244,13 +263,24 @@ if charger or 'df' not in st.session_state:
         df = charger_donnees(actif, date_debut, date_fin, frequence)
         if df is not None and len(df) > 0:
             st.session_state.df = df
-            st.success(f"✅ {len(df)} lignes chargées pour {actif}")
         else:
-            st.error("Impossible de charger les données")
+            st.error("❌ Impossible de charger les données. Vérifiez:")
+            st.info("""
+            - Le symbole de l'actif (AAPL, BTC-USD, etc.)
+            - Les dates sélectionnées
+            - Votre connexion internet
+            
+            💡 **Astuce**: Essayez un autre actif comme **MSFT** ou **GOOGL**
+            """)
             st.stop()
 
 if 'df' in st.session_state:
     df = st.session_state.df.copy()
+    
+    # Vérifier que les données sont valides
+    if df.empty or 'Close' not in df.columns:
+        st.error("❌ Données invalides. Veuillez recharger.")
+        st.stop()
     
     # Calcul des rendements
     df = calculer_rendements(df)
