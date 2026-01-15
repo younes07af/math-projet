@@ -7,474 +7,259 @@ from plotly.subplots import make_subplots
 from scipy import stats
 from datetime import datetime, timedelta
 
-# Configuration de la page
-st.set_page_config(page_title="Plateforme d'Analyse Financière", layout="wide", initial_sidebar_state="expanded")
-
-st.title("📈 Plateforme d'Analyse Financière")
-st.markdown("### Projet de Mathématiques Appliquées à la Finance")
-
 # ============================================
-# SECTION 1: ACQUISITION DES DONNÉES
+# CONFIGURATION ET STYLE
 # ============================================
-st.sidebar.header("⚙️ Configuration")
-
-# Sélection de l'actif
-actif = st.sidebar.selectbox(
-    "Actif financier",
-    ["BTC-USD", "ETH-USD", "AAPL", "TSLA", "GOOGL", "MSFT"]
+st.set_page_config(
+    page_title="Plateforme d'Analyse Financière | Projet Mathématiques",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Sélection de la période
-col1, col2 = st.sidebar.columns(2)
-date_debut = col1.date_input("Date début", datetime(2023, 1, 1))
-date_fin = col2.date_input("Date fin", datetime(2023, 12, 31))
+# Style CSS personnalisé pour un look "Bloomberg/TradingView"
+st.markdown("""
+    <style>
+    .main { background-color: #0e1117; color: #ffffff; }
+    .stMetric { background-color: #1e222d; padding: 15px; border-radius: 10px; border: 1px solid #2a2e39; }
+    div[data-testid="stExpander"] { background-color: #1e222d; border: none; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# Fréquence
-frequence = st.sidebar.selectbox("Fréquence", ["1d", "1h", "5m"])
+# ============================================
+# SECTION 1: ACQUISITION DES DONNÉES (6.1)
+# ============================================
+st.sidebar.header("⚙️ CONFIGURATION DU MARCHÉ")
 
-# Bouton de chargement
-charger = st.sidebar.button("🔄 Charger les données")
+with st.sidebar:
+    actif = st.text_input("Symbole de l'actif (ex: BTC-USD, AAPL, MSFT)", value="BTC-USD").upper()
+    
+    col1, col2 = st.columns(2)
+    date_debut = col1.date_input("Date début", datetime.now() - timedelta(days=365))
+    date_fin = col2.date_input("Date fin", datetime.now())
+    
+    frequence = st.selectbox("Fréquence", ["1d", "1h", "15m", "5m"], index=0)
+    
+    st.markdown("---")
+    st.subheader("Paramètres de la Stratégie")
+    sma_court = st.number_input("SMA Courte (Période)", value=20, min_value=5)
+    sma_long = st.number_input("SMA Longue (Période)", value=50, min_value=10)
+    capital_initial = st.number_input("Capital Initial ($)", value=1000)
+    frais_tx = st.slider("Frais de transaction (%)", 0.0, 0.5, 0.1) / 100
 
-@st.cache_data
-def charger_donnees(ticker, debut, fin, interval="1d"):
-    """Charge les données financières via yfinance"""
+@st.cache_data(ttl=3600)
+def charger_donnees(ticker, debut, fin, interval):
     try:
         data = yf.download(ticker, start=debut, end=fin, interval=interval, progress=False)
         if data.empty:
-            st.error(f"❌ Aucune donnée trouvée pour {ticker}")
             return None
-        
-        # Reset index pour avoir la colonne Date
-        data.reset_index(inplace=True)
-        
-        # Vérifier si les colonnes existent
-        if 'Date' not in data.columns:
-            if 'Datetime' in data.columns:
-                data.rename(columns={'Datetime': 'Date'}, inplace=True)
-        
-        # S'assurer que les colonnes OHLCV existent
-        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-        missing_cols = [col for col in required_cols if col not in data.columns]
-        if missing_cols:
-            st.error(f"❌ Colonnes manquantes: {missing_cols}")
-            return None
-            
-        st.success(f"✅ {len(data)} lignes chargées pour {ticker}")
-        return data
+        # Nettoyage des colonnes Multi-index si présentes (yfinance v0.2.40+)
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        return data.reset_index()
     except Exception as e:
-        st.error(f"❌ Erreur lors du chargement: {str(e)}")
+        st.error(f"Erreur lors du chargement: {e}")
         return None
 
 # ============================================
-# SECTION 2: TRAITEMENT MATHÉMATIQUE
+# SECTION 2: TRAITEMENT MATHÉMATIQUE (6.2 & 6.3)
 # ============================================
 
-def calculer_rendements(df):
+def calculer_metriques_math(df):
     """
-    Calcul des rendements arithmétiques et logarithmiques
-    Rendement arithmétique: Rt = (Pt - Pt-1) / Pt-1
-    Rendement logarithmique: rt = ln(Pt / Pt-1)
+    Calcul des rendements et statistiques selon les formules du projet.
     """
-    df['Rendement_Arith'] = df['Close'].pct_change()
-    df['Rendement_Log'] = np.log(df['Close'] / df['Close'].shift(1))
-    return df
-
-def calculer_statistiques(rendements):
-    """
-    Calcul des statistiques descriptives
-    Moyenne: μ = (1/n) * Σ(Ri)
-    Variance: σ² = (1/(n-1)) * Σ(Ri - μ)²
-    Volatilité annualisée: σ_annuel = σ_quotidien * √252
-    Skewness: E[(R - μ)³] / σ³
-    Kurtosis: E[(R - μ)⁴] / σ⁴
-    """
-    r = rendements.dropna()
+    # 1. Rendements (6.2)
+    df['R_Arith'] = df['Close'].pct_change()
+    df['R_Log'] = np.log(df['Close'] / df['Close'].shift(1))
+    
+    # 2. Statistiques Descriptives (6.3)
+    r = df['R_Arith'].dropna()
     
     stats_dict = {
-        'Moyenne (%)': r.mean() * 100,
-        'Médiane (%)': r.median() * 100,
-        'Écart-type (%)': r.std() * 100,
-        'Volatilité annualisée (%)': r.std() * np.sqrt(252) * 100,
-        'Skewness': stats.skew(r),
-        'Kurtosis': stats.kurtosis(r),
-        'Minimum (%)': r.min() * 100,
-        'Maximum (%)': r.max() * 100,
-        'Percentile 5% (%)': r.quantile(0.05) * 100,
-        'Percentile 25% (%)': r.quantile(0.25) * 100,
-        'Percentile 75% (%)': r.quantile(0.75) * 100,
-        'Percentile 95% (%)': r.quantile(0.95) * 100,
+        "Moyenne (Quotidienne)": r.mean(),
+        "Médiane": r.median(),
+        "Écart-type (σ)": r.std(),
+        "Volatilité Annualisée": r.std() * np.sqrt(252),
+        "Skewness (Asymétrie)": stats.skew(r),
+        "Kurtosis (Aplatissement)": stats.kurtosis(r),
+        "Maximum": r.max(),
+        "Minimum": r.min(),
+        "Percentile 5% (VaR)": r.quantile(0.05),
+        "Percentile 25%": r.quantile(0.25),
+        "Percentile 75%": r.quantile(0.75),
+        "Percentile 95%": r.quantile(0.95)
     }
+    return df, stats_dict
+
+# ============================================
+# SECTION 3: INDICATEURS TECHNIQUES (6.4)
+# ============================================
+
+def ajouter_indicateurs(df):
+    # SMA (Moyenne Mobile Simple)
+    df['SMA_C'] = df['Close'].rolling(window=sma_court).mean()
+    df['SMA_L'] = df['Close'].rolling(window=sma_long).mean()
     
-    return stats_dict
-
-# ============================================
-# SECTION 3: INDICATEURS TECHNIQUES
-# ============================================
-
-def calculer_sma(df, periode):
-    """
-    Moyenne Mobile Simple
-    SMAn(t) = (1/n) * Σ(Pt-i) pour i=0 à n-1
-    """
-    return df['Close'].rolling(window=periode).mean()
-
-def calculer_ema(df, periode):
-    """
-    Moyenne Mobile Exponentielle
-    EMAn(t) = α * Pt + (1-α) * EMAn(t-1)
-    où α = 2/(n+1)
-    """
-    return df['Close'].ewm(span=periode, adjust=False).mean()
-
-def calculer_bollinger(df, periode=20, num_std=2):
-    """
-    Bandes de Bollinger
-    Bande supérieure = SMAn(t) + k * σn(t)
-    Bande inférieure = SMAn(t) - k * σn(t)
-    """
-    sma = df['Close'].rolling(window=periode).mean()
-    std = df['Close'].rolling(window=periode).std()
-    upper = sma + (num_std * std)
-    lower = sma - (num_std * std)
-    return sma, upper, lower
-
-def calculer_rsi(df, periode=14):
-    """
-    Relative Strength Index
-    RSI = 100 - (100 / (1 + RS))
-    où RS = Moyenne des gains / Moyenne des pertes
-    """
+    # Bandes de Bollinger
+    std_20 = df['Close'].rolling(window=20).std()
+    df['BB_Mid'] = df['Close'].rolling(window=20).mean()
+    df['BB_Upper'] = df['BB_Mid'] + (2 * std_20)
+    df['BB_Lower'] = df['BB_Mid'] - (2 * std_20)
+    
+    # RSI (Relative Strength Index)
     delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=periode).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=periode).mean()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
-def calculer_macd(df, rapide=12, lent=26, signal=9):
-    """
-    MACD (Moving Average Convergence Divergence)
-    MACD = EMA12(t) - EMA26(t)
-    Signal = EMA9(MACD)
-    Histogramme = MACD - Signal
-    """
-    ema_rapide = df['Close'].ewm(span=rapide, adjust=False).mean()
-    ema_lent = df['Close'].ewm(span=lent, adjust=False).mean()
-    macd = ema_rapide - ema_lent
-    signal_line = macd.ewm(span=signal, adjust=False).mean()
-    histogram = macd - signal_line
-    return macd, signal_line, histogram
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    return df
 
 # ============================================
-# SECTION 4: BACKTESTING
+# SECTION 4: BACKTESTING (6.5)
 # ============================================
 
-def backtest_strategie_sma(df, periode_courte=20, periode_longue=50, capital_initial=1000, frais=0.001):
-    """
-    Backtesting d'une stratégie de croisement de moyennes mobiles
-    Signal d'achat: SMA_courte > SMA_longue
-    Signal de vente: SMA_courte < SMA_longue
-    """
-    df = df.copy()
+def executer_backtest(df, cap_init, fees):
+    # Signal: 1 si SMA_C > SMA_L, sinon 0 (6.5.1)
+    df['Signal'] = np.where(df['SMA_C'] > df['SMA_L'], 1, 0)
     
-    # Calcul des SMA
-    df['SMA_court'] = calculer_sma(df, periode_courte)
-    df['SMA_long'] = calculer_sma(df, periode_longue)
-    
-    # Génération des signaux
-    df['Signal'] = 0
-    df.loc[df['SMA_court'] > df['SMA_long'], 'Signal'] = 1
-    
-    # Positions (décalage d'un jour pour éviter le look-ahead bias)
+    # Position décalée pour éviter le look-ahead bias
     df['Position'] = df['Signal'].shift(1)
     
-    # Calcul des rendements
-    df['Rendement_Actif'] = df['Close'].pct_change()
+    # Calcul des rendements de la stratégie (6.5.2)
+    # R_strat = Position_{t-1} * R_actif_t
+    df['Strat_Ret_Brut'] = df['Position'] * df['R_Arith']
     
-    # Rendement de la stratégie: R_strat_t = Position_(t-1) * R_actif_t
-    df['Rendement_Strat'] = df['Position'] * df['Rendement_Actif']
+    # Calcul des frais (0.1% par transaction)
+    df['Trade'] = df['Position'].diff().abs() # 1 si on change de position
+    df['Frais'] = df['Trade'] * fees
+    df['Strat_Ret_Net'] = df['Strat_Ret_Brut'] - df['Frais']
     
-    # Identification des transactions (changement de position)
-    df['Transaction'] = df['Position'].diff().abs()
+    # Évolution du capital (6.5.2 pt 4)
+    df['Equity'] = cap_init * (1 + df['Strat_Ret_Net'].fillna(0)).cumprod()
+    df['BuyHold_Equity'] = cap_init * (1 + df['R_Arith'].fillna(0)).cumprod()
     
-    # Application des frais de transaction
-    df['Frais'] = df['Transaction'] * frais
-    df['Rendement_Net'] = df['Rendement_Strat'] - df['Frais']
+    # Métriques de performance (6.5.2 pt 5)
+    r_strat = df['Strat_Ret_Net'].dropna()
+    total_ret = (df['Equity'].iloc[-1] - cap_init) / cap_init
+    vol_ann = r_strat.std() * np.sqrt(252)
+    sharpe = (r_strat.mean() / r_strat.std()) * np.sqrt(252) if r_strat.std() != 0 else 0
     
-    # Évolution du capital: Ct = Ct-1 * (1 + R_strat_t)
-    df['Capital'] = capital_initial * (1 + df['Rendement_Net']).cumprod()
+    # Drawdown Maximum
+    peak = df['Equity'].cummax()
+    dd = (df['Equity'] - peak) / peak
+    mdd = dd.min()
     
-    # Capital Buy & Hold (référence)
-    df['Capital_BH'] = capital_initial * (1 + df['Rendement_Actif']).cumprod()
-    
-    # Calcul des métriques
-    rendements_strat = df['Rendement_Net'].dropna()
-    
-    # Rendement total
-    rendement_total = (df['Capital'].iloc[-1] - capital_initial) / capital_initial * 100
-    rendement_bh = (df['Capital_BH'].iloc[-1] - capital_initial) / capital_initial * 100
-    
-    # Volatilité annualisée
-    volatilite = rendements_strat.std() * np.sqrt(252) * 100
-    
-    # Ratio de Sharpe: (moyenne(R_strat) / σ_strat) * √252
-    if rendements_strat.std() > 0:
-        sharpe = (rendements_strat.mean() / rendements_strat.std()) * np.sqrt(252)
-    else:
-        sharpe = 0
-    
-    # Maximum Drawdown: MDD = max((Ct - max(Cs)) / max(Cs))
-    capital_cummax = df['Capital'].cummax()
-    drawdown = (df['Capital'] - capital_cummax) / capital_cummax
-    max_drawdown = drawdown.min() * 100
-    
-    # Nombre de trades
-    nb_trades = int(df['Transaction'].sum())
-    
-    # Calcul du win rate et profit factor
-    df['PnL'] = df['Capital'].diff()
-    trades_winning = len(df[df['PnL'] > 0])
-    trades_total = len(df[df['PnL'] != 0])
-    win_rate = (trades_winning / trades_total * 100) if trades_total > 0 else 0
-    
-    total_gains = df[df['PnL'] > 0]['PnL'].sum()
-    total_pertes = abs(df[df['PnL'] < 0]['PnL'].sum())
-    profit_factor = (total_gains / total_pertes) if total_pertes > 0 else 0
-    
-    metriques = {
-        'Rendement Total (%)': rendement_total,
-        'Rendement Buy & Hold (%)': rendement_bh,
-        'Volatilité Annualisée (%)': volatilite,
-        'Ratio de Sharpe': sharpe,
-        'Maximum Drawdown (%)': max_drawdown,
-        'Nombre de Trades': nb_trades,
-        'Win Rate (%)': win_rate,
-        'Profit Factor': profit_factor
+    performance = {
+        "Rendement Total": total_ret,
+        "Volatilité Stratégie": vol_ann,
+        "Ratio de Sharpe": sharpe,
+        "Max Drawdown": mdd,
+        "Nombre de Trades": int(df['Trade'].sum())
     }
     
-    return df, metriques
+    return df, performance
 
 # ============================================
-# INTERFACE PRINCIPALE
+# INTERFACE PRINCIPALE (DASHBOARD)
 # ============================================
 
-if charger or 'df' not in st.session_state:
-    with st.spinner("Chargement des données..."):
-        df = charger_donnees(actif, date_debut, date_fin, frequence)
-        if df is not None and len(df) > 0:
-            st.session_state.df = df
-        else:
-            st.error("❌ Impossible de charger les données. Vérifiez:")
-            st.info("""
-            - Le symbole de l'actif (AAPL, BTC-USD, etc.)
-            - Les dates sélectionnées
-            - Votre connexion internet
-            
-            💡 **Astuce**: Essayez un autre actif comme **MSFT** ou **GOOGL**
-            """)
-            st.stop()
+st.title(f"📊 Dashboard: {actif}")
+st.markdown(f"*Analyse de la période {date_debut} au {date_fin}*")
 
-if 'df' in st.session_state:
-    df = st.session_state.df.copy()
+df_raw = charger_donnees(actif, date_debut, date_fin, frequence)
+
+if df_raw is not None:
+    # Traitement des données
+    df, stats_math = calculer_metriques_math(df_raw)
+    df = ajouter_indicateurs(df)
+    df, perf = executer_backtest(df, capital_initial, frais_tx)
     
-    # Vérifier que les données sont valides
-    if df.empty or 'Close' not in df.columns:
-        st.error("❌ Données invalides. Veuillez recharger.")
-        st.stop()
+    # Onglets pour l'organisation (Section 7 du projet)
+    tab_main, tab_stats, tab_backtest = st.tabs(["📈 Graphique Principal", "🧮 Analyse Mathématique", "🎯 Backtesting"])
     
-    # Calcul des rendements
-    df = calculer_rendements(df)
-    
-    # ============================================
-    # GRAPHIQUE PRINCIPAL
-    # ============================================
-    
-    st.header("📊 Graphique Principal")
-    
-    # Sélection des indicateurs
-    col1, col2, col3, col4 = st.columns(4)
-    show_sma20 = col1.checkbox("SMA(20)", value=True)
-    show_sma50 = col2.checkbox("SMA(50)", value=True)
-    show_bollinger = col3.checkbox("Bandes de Bollinger", value=False)
-    show_rsi = col4.checkbox("RSI", value=False)
-    
-    # Création du graphique
-    fig = make_subplots(
-        rows=2 if show_rsi else 1,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.05,
-        row_heights=[0.7, 0.3] if show_rsi else [1],
-        subplot_titles=("Prix et Indicateurs", "RSI") if show_rsi else ("Prix et Indicateurs",)
-    )
-    
-    # Prix
-    fig.add_trace(go.Scatter(
-        x=df['Date'], y=df['Close'],
-        name='Prix',
-        line=dict(color='#3B82F6', width=2)
-    ), row=1, col=1)
-    
-    # Indicateurs
-    if show_sma20:
-        sma20 = calculer_sma(df, 20)
-        fig.add_trace(go.Scatter(
-            x=df['Date'], y=sma20,
-            name='SMA(20)',
-            line=dict(color='#10B981', width=1.5)
-        ), row=1, col=1)
-    
-    if show_sma50:
-        sma50 = calculer_sma(df, 50)
-        fig.add_trace(go.Scatter(
-            x=df['Date'], y=sma50,
-            name='SMA(50)',
-            line=dict(color='#F59E0B', width=1.5)
-        ), row=1, col=1)
-    
-    if show_bollinger:
-        sma, upper, lower = calculer_bollinger(df)
-        fig.add_trace(go.Scatter(
-            x=df['Date'], y=upper,
-            name='BB Supérieure',
-            line=dict(color='#EF4444', width=1, dash='dash')
-        ), row=1, col=1)
-        fig.add_trace(go.Scatter(
-            x=df['Date'], y=lower,
-            name='BB Inférieure',
-            line=dict(color='#EF4444', width=1, dash='dash'),
-            fill='tonexty'
-        ), row=1, col=1)
-    
-    if show_rsi:
-        rsi = calculer_rsi(df)
-        fig.add_trace(go.Scatter(
-            x=df['Date'], y=rsi,
-            name='RSI',
-            line=dict(color='#8B5CF6', width=2)
-        ), row=2, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-    
-    fig.update_layout(
-        height=600 if show_rsi else 500,
-        template='plotly_dark',
-        hovermode='x unified',
-        showlegend=True
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # ============================================
-    # STATISTIQUES
-    # ============================================
-    
-    st.header("📈 Statistiques des Rendements")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Statistiques Descriptives")
-        stats_dict = calculer_statistiques(df['Rendement_Arith'])
-        stats_df = pd.DataFrame.from_dict(stats_dict, orient='index', columns=['Valeur'])
-        st.dataframe(stats_df, use_container_width=True)
+    # --- ONGLET 1: GRAPHIQUE PRINCIPAL ---
+    with tab_main:
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                           vertical_spacing=0.05, row_heights=[0.7, 0.3],
+                           subplot_titles=("Prix & Moyennes Mobiles", "Indicateur RSI"))
         
-        # Test de normalité
-        rendements_clean = df['Rendement_Arith'].dropna()
-        stat, p_value = stats.shapiro(rendements_clean[:5000])  # Limite pour Shapiro
-        st.metric("Test de Normalité (Shapiro-Wilk)", 
-                  f"p-value = {p_value:.4f}",
-                  "Non normal" if p_value < 0.05 else "Normal")
-    
-    with col2:
-        st.subheader("Distribution des Rendements")
-        fig_hist = go.Figure()
-        fig_hist.add_trace(go.Histogram(
-            x=df['Rendement_Arith'].dropna() * 100,
-            nbinsx=50,
-            name='Rendements',
-            marker_color='#3B82F6'
-        ))
-        fig_hist.update_layout(
-            template='plotly_dark',
-            xaxis_title='Rendement (%)',
-            yaxis_title='Fréquence',
-            height=400
-        )
-        st.plotly_chart(fig_hist, use_container_width=True)
-    
-    # ============================================
-    # BACKTESTING
-    # ============================================
-    
-    st.header("🎯 Backtesting de Stratégie")
-    st.markdown("**Stratégie de croisement de moyennes mobiles (SMA)**")
-    
-    col1, col2, col3 = st.columns(3)
-    sma_court = col1.number_input("SMA Court", value=20, min_value=5, max_value=100)
-    sma_long = col2.number_input("SMA Long", value=50, min_value=10, max_value=200)
-    capital = col3.number_input("Capital Initial (€)", value=1000, min_value=100)
-    
-    if st.button("🚀 Lancer le Backtest"):
-        with st.spinner("Calcul en cours..."):
-            df_backtest, metriques = backtest_strategie_sma(df, sma_court, sma_long, capital)
+        # Chandeliers ou Ligne de prix
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['Close'], name="Prix de Clôture", line=dict(color='#2962ff', width=2)), row=1, col=1)
+        
+        # SMA
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['SMA_C'], name=f"SMA {sma_court}", line=dict(color='#ff9800', width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['SMA_L'], name=f"SMA {sma_long}", line=dict(color='#4caf50', width=1.5)), row=1, col=1)
+        
+        # Bandes de Bollinger (Optionnel dans la vue)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['BB_Upper'], name="BB Upper", line=dict(color='rgba(173, 216, 230, 0.4)', dash='dash'), showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['BB_Lower'], name="BB Lower", line=dict(color='rgba(173, 216, 230, 0.4)', dash='dash'), fill='tonexty', showlegend=False), row=1, col=1)
+
+        # RSI
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['RSI'], name="RSI", line=dict(color='#9c27b0')), row=2, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="#ef5350", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="#66bb6a", row=2, col=1)
+        
+        fig.update_layout(height=650, template="plotly_dark", hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # --- ONGLET 2: ANALYSE MATHÉMATIQUE ---
+    with tab_stats:
+        st.header("Analyse Statistique des Rendements")
+        
+        col_s1, col_s2 = st.columns([1, 2])
+        
+        with col_s1:
+            st.subheader("Métriques Descriptives")
+            # Transformation du dictionnaire en DataFrame pour un affichage propre
+            stats_df = pd.DataFrame.from_dict(stats_math, orient='index', columns=['Valeur'])
+            st.dataframe(stats_df.style.format("{:.4f}"), use_container_width=True)
             
-            # Affichage des métriques
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Rendement Total", f"{metriques['Rendement Total (%)']:.2f}%")
-            col2.metric("Ratio de Sharpe", f"{metriques['Ratio de Sharpe']:.2f}")
-            col3.metric("Max Drawdown", f"{metriques['Maximum Drawdown (%)']:.2f}%")
-            col4.metric("Win Rate", f"{metriques['Win Rate (%)']:.2f}%")
-            
-            # Tableau des métriques
-            st.subheader("Métriques Détaillées")
-            metriques_df = pd.DataFrame.from_dict(metriques, orient='index', columns=['Valeur'])
-            st.dataframe(metriques_df, use_container_width=True)
-            
-            # Graphique de l'évolution du capital
-            st.subheader("Évolution du Capital")
-            fig_capital = go.Figure()
-            fig_capital.add_trace(go.Scatter(
-                x=df_backtest['Date'],
-                y=df_backtest['Capital'],
-                name='Stratégie',
-                line=dict(color='#10B981', width=2)
-            ))
-            fig_capital.add_trace(go.Scatter(
-                x=df_backtest['Date'],
-                y=df_backtest['Capital_BH'],
-                name='Buy & Hold',
-                line=dict(color='#3B82F6', width=2, dash='dash')
-            ))
-            fig_capital.update_layout(
-                template='plotly_dark',
-                xaxis_title='Date',
-                yaxis_title='Capital (€)',
-                height=400
-            )
-            st.plotly_chart(fig_capital, use_container_width=True)
-            
-            # Analyse critique
-            st.subheader("💡 Analyse Critique")
-            if metriques['Rendement Total (%)'] > metriques['Rendement Buy & Hold (%)']:
-                st.success(f"✅ La stratégie surperforme le Buy & Hold de {metriques['Rendement Total (%)'] - metriques['Rendement Buy & Hold (%)']:.2f}%")
+            # Test de Normalité (6.3)
+            stat, p_val = stats.shapiro(df['R_Arith'].dropna().iloc[:5000]) # Shapiro limité à 5000 points
+            st.metric("Test Shapiro-Wilk (p-value)", f"{p_val:.4f}")
+            if p_val < 0.05:
+                st.error("⚠️ Distribution non normale (p < 0.05)")
             else:
-                st.warning(f"⚠️ La stratégie sous-performe le Buy & Hold de {metriques['Rendement Buy & Hold (%)'] - metriques['Rendement Total (%)']:.2f}%")
-            
-            st.info(f"""
-            **Interprétation:**
-            - Le ratio de Sharpe de {metriques['Ratio de Sharpe']:.2f} indique {'un bon' if metriques['Ratio de Sharpe'] > 1 else 'un faible'} rendement ajusté au risque
-            - Le Maximum Drawdown de {metriques['Maximum Drawdown (%)']:.2f}% représente la perte maximale depuis un pic
-            - {metriques['Nombre de Trades']} trades ont été exécutés avec un win rate de {metriques['Win Rate (%)']:.2f}%
-            """)
+                st.success("✅ Distribution normale")
 
-    # ============================================
-    # DONNÉES BRUTES
-    # ============================================
-    
-    with st.expander("📋 Voir les données brutes"):
-        st.dataframe(df.tail(50), use_container_width=True)
+        with col_s2:
+            st.subheader("Distribution des Rendements")
+            fig_hist = go.Figure()
+            fig_hist.add_trace(go.Histogram(x=df['R_Arith'].dropna(), nbinsx=50, name="Frequence", marker_color='#2962ff', opacity=0.7))
+            fig_hist.update_layout(template="plotly_dark", xaxis_title="Rendement", yaxis_title="Nombre de jours")
+            st.plotly_chart(fig_hist, use_container_width=True)
 
-# Footer
-st.markdown("---")
-st.markdown("**Projet de Mathématiques Appliquées à la Finance** | Encadrant: M. Hamza Saber")
+    # --- ONGLET 3: BACKTESTING ---
+    with tab_backtest:
+        st.header("Résultats de la Stratégie SMA Cross")
+        
+        # Metrics Row
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Rendement Stratégie", f"{perf['Rendement Total']:.2%}")
+        m2.metric("Ratio de Sharpe", f"{perf['Ratio de Sharpe']:.2f}")
+        m3.metric("Max Drawdown", f"{perf['Max Drawdown']:.2%}")
+        m4.metric("Nombre de Trades", perf['Nombre de Trades'])
+        
+        # Equity Curve
+        fig_equity = go.Figure()
+        fig_equity.add_trace(go.Scatter(x=df['Date'], y=df['Equity'], name="Stratégie (Net de frais)", line=dict(color='#00e676', width=3)))
+        fig_equity.add_trace(go.Scatter(x=df['Date'], y=df['BuyHold_Equity'], name="Buy & Hold (Référence)", line=dict(color='#757575', dash='dot')))
+        
+        fig_equity.update_layout(title="Évolution du Capital ($)", template="plotly_dark", height=450)
+        st.plotly_chart(fig_equity, use_container_width=True)
+        
+        # Analyse critique (7.4)
+        st.subheader("💡 Analyse Critique")
+        diff = perf['Rendement Total'] - ((df['Close'].iloc[-1]/df['Close'].iloc[0]) - 1)
+        if diff > 0:
+            st.success(f"La stratégie a surperformé le marché de {diff:.2%}. Le ratio de Sharpe de {perf['Ratio de Sharpe']:.2f} suggère une gestion du risque {'efficace' if perf['Ratio de Sharpe'] > 1 else 'modérée'}.")
+        else:
+            st.warning(f"La stratégie a sous-performé le marché. Les frais de transaction ({frais_tx*100}%) et la latence des signaux SMA peuvent expliquer ce résultat.")
+
+    # Footer
+    st.markdown("---")
+    st.caption(f"Projet Mathématiques Appliquées | Encadrant: M. Hamza Saber | Données: Yahoo Finance API")
+
+else:
+    st.error("Impossible de récupérer les données pour ce symbole. Vérifiez la connexion ou le ticker.")
